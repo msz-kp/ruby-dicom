@@ -46,6 +46,7 @@ require_relative 'dicom/element'
 require_relative 'dicom/file_handler'
 require_relative 'dicom/item'
 require_relative 'dicom/link'
+require_relative 'dicom/mwl_handler'
 require_relative 'dicom/sequence'
 require_relative 'dicom/stream'
 # Dictionary:

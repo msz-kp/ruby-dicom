@@ -445,8 +445,13 @@ module DICOM
     # the code somewhat. Probably a better handling of command requests (and their corresponding data fragments) would be a good idea.
     #
     def handle_incoming_data(path)
-      # Wait for incoming data:
-      segments = receive_multiple_transmissions(file=true)
+      # HACK: path
+      @save_path = path
+      success, messages = receive_multiple_transmissions(file = true)
+      return success, messages
+    end
+
+    def handle_segments(segments)
       # Reset command results arrays:
       @command_results = Array.new
       @data_results = Array.new
@@ -473,9 +478,35 @@ module DICOM
           end
         end
       end
+
+      return files, file_transfer_syntaxes
+    end
+
+    def handle_receive_files(segments)
+      files, file_transfer_syntaxes = handle_segments(segments)
+
       # Process the received files using the customizable FileHandler class:
-      success, messages = @file_handler.receive_files(path, files, file_transfer_syntaxes)
+      success, messages = @file_handler.receive_files(@save_path, files, file_transfer_syntaxes, @session.peeraddr(:numeric)[3])
+
       return success, messages
+    end
+
+    def perform_send(objects)
+      objects.each do |dcm|
+        dcm.transfer_syntax = @transfer_syntax
+        dcm.delete_group(META_GROUP)
+        max_header_length = 14
+
+        data_packages = dcm.encode_segments(@max_receive_size - max_header_length, @transfer_syntax)
+        last_data_package = data_packages.pop
+        data_packages.each do |data_package|
+          build_storage_fragment(PDU_DATA,  @presentation_context_id, DATA_MORE_FRAGMENTS, data_package)
+          transmit
+        end
+        # Transmit the last data string:
+        build_storage_fragment(PDU_DATA,  @presentation_context_id, DATA_LAST_FRAGMENT, last_data_package)
+        transmit
+      end
     end
 
     # Handles the rejection message (The response used to an association request when its formalities are not correct).
@@ -506,19 +537,22 @@ module DICOM
     # This is usually a C-STORE-RSP which follows the (successful) reception of a DICOM file, but may also
     # be a C-ECHO-RSP in response to an echo request.
     #
-    def handle_response
+    def handle_response(params = {})
       # Need to construct the command elements array:
       command_elements = Array.new
       # SOP Class UID:
       command_elements << ["0000,0002", "UI", @command_request["0000,0002"]]
       # Command Field:
       command_elements << ["0000,0100", "US", command_field_response(@command_request["0000,0100"])]
+      # some c-find..
+      command_elements << ["0000,0110", "US", params["0000,0110"]] if params["0000,0110"] # not used
+      command_elements << ["0000,0700", "US", params["0000,0700"]] if params["0000,0700"] # not used
       # Message ID Being Responded To:
-      command_elements << ["0000,0120", "US", @command_request["0000,0110"]]
+      command_elements << ["0000,0120", "US", @command_request["0000,0110"]] if @command_request["0000,0110"] # sometimes missing
       # Data Set Type:
-      command_elements << ["0000,0800", "US", NO_DATA_SET_PRESENT]
+      command_elements << ["0000,0800", "US", params["0000,0800"] || NO_DATA_SET_PRESENT]
       # Status:
-      command_elements << ["0000,0900", "US", SUCCESS]
+      command_elements << ["0000,0900", "US", params["0000,0900"] || SUCCESS]
       # Affected SOP Instance UID:
       command_elements << ["0000,1000", "UI", @command_request["0000,1000"]] if @command_request["0000,1000"]
       build_command_fragment(PDU_DATA, @presentation_context_id, COMMAND_LAST_FRAGMENT, command_elements)
@@ -985,7 +1019,16 @@ module DICOM
           info[:bin] = msg.rest_string
           # If this was the last data fragment of a C-STORE, we need to send a receipt:
           # (However, for, say a C-FIND-RSP, which indicates the end of the query results, this method shall not be called) (Command Field (0000,0100) holds information on this)
-          handle_response if info[:presentation_context_flag] == DATA_LAST_FRAGMENT and @command_request["0000,0100"] != C_FIND_RSP
+          if info[:presentation_context_flag] == DATA_LAST_FRAGMENT
+             case @command_request["0000,0100"]
+             when C_STORE_RQ, C_FIND_RQ
+               @should_handle_response = true
+             else
+               logger.warn "unexcepted command_request [0000,0100]: #{@command_request["0000,0100"]}"
+               #should we?
+               handle_response("0000,0900" => 49153)
+             end
+          end
         else
           # Decode data elements:
           while msg.index < last_index do
@@ -1072,7 +1115,7 @@ module DICOM
       # Perhaps there is a more elegant way to wait for incoming messages?
       #
       @listen = true
-      segments = Array.new
+      segments = []
       while @listen
         # Receive data and append the current data to our segments array, which will be returned.
         data = receive_transmission(@min_length)
@@ -1082,6 +1125,38 @@ module DICOM
             segments << cs
           end
         end
+
+        if @should_handle_response
+          @should_handle_response = false
+          case  @command_request["0000,0100"]
+          when C_STORE_RQ
+            success, messages =  handle_receive_files(segments)
+            messages.each { |m| logger.public_send(m.first, m.last) } unless messages.empty?
+            segments = []
+            if success
+              handle_response
+            else
+              handle_response("0000,0900" => 272)
+            end
+          # mwl
+          when C_FIND_RQ
+            if @command_request["0000,0002"] == '1.2.840.10008.5.1.4.31'
+              mwl_handler = MWLHandler.new(self, segments)
+              success, messages = mwl_handler.process
+              messages.each { |m| logger.public_send(m.first, m.last) } unless messages.empty?
+              segments = []
+            else
+              # return empty
+              logger.warn("except MLW FIND_RQ / 0000,0002 == 1.2.840.10008.5.1.4.31, got: #{@command_request["0000,0002"]}")
+              handle_response("0000,0800" => NO_DATA_SET_PRESENT,"0000,0900" => SUCCESS)
+              segments = []
+            end
+          else
+            # really?
+            raise 'debug: should not happed !'
+          end
+        end
+
       end
       segments << {:valid => false} unless segments
       return segments
@@ -1298,6 +1373,8 @@ module DICOM
           return C_STORE_RSP
         when C_ECHO_RQ
           return C_ECHO_RSP
+        when C_FIND_RQ
+          return C_FIND_RSP
         else
           logger.error("Unknown or unsupported request (#{request}) encountered.")
           return C_CANCEL_RQ
@@ -1459,13 +1536,17 @@ module DICOM
     #
     def receive_transmission_data
       data = false
-      response = IO.select([@session], nil, nil, @timeout)
-      if response.nil?
-        logger.error("No answer was received within the specified timeout period. Aborting.")
-        stop_receiving
-      else
-        data = @session.recv(@max_receive_size)
+      begin
+        data = @session.read_nonblock(@max_receive_size)
+      rescue IO::WaitReadable
+        if @session.wait_readable(@timeout).nil?
+          logger.error("No answer was received within the specified timeout period. Aborting.")
+          stop_receiving
+        else
+          retry
+        end
       end
+
       data
     end
 

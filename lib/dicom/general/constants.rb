@@ -44,8 +44,9 @@ module DICOM
   # Application context SOP class UID.
   APPLICATION_CONTEXT = "1.2.840.10008.3.1.1.1"
 
-  # Network transmission successful.
+  # Network transmission
   SUCCESS = 0
+  PENDING = 65280
   # Network proposition accepted.
   ACCEPTANCE = 0
   # Presentation context rejected by abstract syntax.
@@ -210,4 +211,3 @@ module DICOM
   VALUE_CONVERSION.default = :to_s
 
 end
-

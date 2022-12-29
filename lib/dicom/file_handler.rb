@@ -35,7 +35,7 @@ module DICOM
     # * <tt>dcm</tt> -- A DObject instance which will be written to file.
     # * <tt>transfer_syntax</tt> -- String. Specifies the transfer syntax that will be used to write the DICOM file.
     #
-    def self.save_file(path_prefix, dcm, transfer_syntax)
+    def self.save_file(path_prefix, dcm, transfer_syntax, ip)
       # File name is set using the SOP Instance UID:
       file_name = dcm.value("0008,0018") || "missing_SOP_UID"
       extension = ".dcm"
@@ -47,8 +47,8 @@ module DICOM
       full_path = path_prefix + local_path + extension
       # Save the DICOM object to disk:
       dcm.write(full_path, :transfer_syntax => transfer_syntax)
-      message = [:info, "DICOM file saved to: #{full_path}"]
-      return message
+      message = "#{ip}: DICOM file saved to: #{full_path}"
+      return true, message
     end
 
     # Handles the reception of a series of DICOM objects which are received in a single association.
@@ -65,7 +65,7 @@ module DICOM
     # * <tt>objects</tt> -- An array containing the DObject instances which were received.
     # * <tt>transfer_syntaxes</tt> -- An array containing the transfer syntaxes belonging to the received objects.
     #
-    def self.receive_files(path, objects, transfer_syntaxes)
+    def self.receive_files(path, objects, transfer_syntaxes, ip)
       all_success = true
       successful, too_short, parse_fail, handle_fail = 0, 0, 0, 0
       total = objects.length
@@ -74,21 +74,24 @@ module DICOM
       # Process each DICOM object:
       objects.each_index do |i|
         if objects[i].length > 8
-          # Temporarily increase the log threshold to suppress messages from the DObject class:
-          server_level = DICOM.logger.level
-          DICOM.logger.level = Logger::FATAL
           # Parse the received data string and load it to a DICOM object:
           dcm = DObject.parse(objects[i], :no_meta => true, :syntax => transfer_syntaxes[i])
-          # Reset the logg threshold:
-          DICOM.logger.level = server_level
           if dcm.read?
             begin
-              message = self.save_file(path, dcm, transfer_syntaxes[i])
-              successful += 1
-            rescue
+              ok, m = self.save_file(path, dcm, transfer_syntaxes[i], ip)
+              if ok
+                successful += 1
+                message = [:info, m]
+              else
+                handle_fail += 1
+                all_success = false
+                messages << [:error, m]
+              end
+            rescue StandardError => e
+              e_msg = "Processing file failed! #{e.message}"
               handle_fail += 1
               all_success = false
-              messages << [:error, "Saving file failed!"]
+              messages << [:error, e_msg]
             end
           else
             parse_fail += 1

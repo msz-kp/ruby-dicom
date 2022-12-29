@@ -190,7 +190,7 @@ module DICOM
             link = Link.new(:host_ae => @host_ae, :max_package_size => @max_package_size, :timeout => @timeout, :file_handler => @file_handler)
             link.set_session(session)
             # Note who has contacted us:
-            logger.info("Connection established with:  #{session.peeraddr[2]}  (IP: #{session.peeraddr[3]})")
+            logger.info("Connection established with: #{session.peeraddr[3]}")
             # Receive an incoming message:
             segments = link.receive_multiple_transmissions
             info = segments.first
@@ -212,9 +212,7 @@ module DICOM
                     end
                   end
                   # Process the incoming data. This method will also take care of releasing the association:
-                  success, messages = link.handle_incoming_data(path)
-                  # Pass along any messages that has been recorded:
-                  messages.each { |m| logger.public_send(m.first, m.last) } if messages.first
+                  link.handle_incoming_data(path)
                 else
                   # No abstract syntaxes in the incoming request were accepted:
                   if rejected == 1
@@ -236,6 +234,9 @@ module DICOM
             # Terminate the connection:
             link.stop_session
             logger.info("Connection closed.\n\n")
+          rescue EOFError
+            logger.warn("Unexpected disconnect?\n\n")
+            link.stop_session
           end
         end
       else

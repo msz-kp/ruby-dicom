@@ -19,13 +19,12 @@ Gem::Specification.new do |s|
 
   s.required_ruby_version = '>= 2.2.2'
 
-  s.add_development_dependency('bundler', '~> 1.16')
+  s.add_development_dependency('bundler')
   s.add_development_dependency('mini_magick', '~> 4.8')
   s.add_development_dependency('mocha', '~> 1.1')
   s.add_development_dependency('numo-narray', '~> 0.9', '>= 0.9.1.1')
   s.add_development_dependency('rake', '~> 12.3')
   s.add_development_dependency('redcarpet', '~> 3.4')
-  s.add_development_dependency('rmagick', '~> 2.15')
   s.add_development_dependency('rspec', '~> 3.7')
   s.add_development_dependency('yard', '~> 0.9', '>= 0.9.12')
 end
